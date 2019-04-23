@@ -5,6 +5,7 @@ import io
 import csv
 import shutil
 from datetime import datetime
+import time
 from struct import pack
 from threading import Thread
 
@@ -62,7 +63,7 @@ class SpeechRecognizer(object):
         self.async = False
         dynamic_thresholding = False
         if not dynamic_thresholding:
-            threshold = 11000
+            threshold = 5000
         else:
             threshold = 50
         self.speech_detector = SpeechDetector(
@@ -152,29 +153,38 @@ class SpeechRecognizer(object):
             thread.start()
         #while not rospy.is_shutdown():
         # put the timing constraints here??? 
-        while True:
-            aud_data, start_time, end_time = self.speech_detector.get_next_utter(
-                self.stream, *self.get_utterance_start_end_callbacks(sn))
-            if aud_data is None:
-                #rospy.loginfo("No more data, exiting...")
-                break
-            self.record_to_file(aud_data, sn)
-            if self.async:
-                operation = self.recog(sn)
-                if operation is not None:  # TODO: Improve
-                    self.operation_queue.append([sn, operation, start_time, end_time])
-            else:
-                # Send only that you received speech if you don't want transcriptions.
-                if not self.do_transcription:
-                    transc, confidence = ("dummy_transcript with no confidence", 0.0)
-                else:
-                    transc, confidence = self.recog(sn)
-                    if (transc is not None):
-                        self.utterance_decoded(sn, transc, confidence, start_time, end_time)
+        is_past_bedtime = (datetime.now().hour > 22)
+        is_before_wake_time = (datetime.now().hour < 5)
+        try:
+            while (True):
+                if (is_past_bedtime or is_before_wake_time):
+                    aud_data, start_time, end_time = self.speech_detector.get_next_utter(
+                        self.stream, *self.get_utterance_start_end_callbacks(sn))
+                    if aud_data is None:
+                        #rospy.loginfo("No more data, exiting...")
+                        break
+                    self.record_to_file(aud_data, sn)
+                    if self.async:
+                        operation = self.recog(sn)
+                        if operation is not None:  # TODO: Improve
+                            self.operation_queue.append([sn, operation, start_time, end_time])
                     else:
-                        self.utterance_decoded(sn, "## speech not recognized ##", 0.0, start_time, end_time)
-            sn += 1
-        self.terminate()
+                        # Send only that you received speech if you don't want transcriptions.
+                        if not self.do_transcription:
+                            transc, confidence = ("dummy_transcript with no confidence", 0.0)
+                        else:
+                            transc, confidence = self.recog(sn)
+                            if (transc is not None):
+                                self.utterance_decoded(sn, transc, confidence, start_time, end_time)
+                            else:
+                                self.utterance_decoded(sn, "## speech not recognized ##", 0.0, start_time, end_time)
+                    sn += 1
+                else:
+                    time.sleep(60)
+        except KeyboardInterrupt:
+            print("W: interrupt received, stopping")
+        finally:
+            self.terminate()
 
     def terminate(self):
         if hasattr(self, "stream"):
