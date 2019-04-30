@@ -49,7 +49,7 @@ class SpeechRecognizer(object):
     def __init__(self):
         self._init_history_directory()
         #self.node_name = rospy.get_name()
-        self.print_level = 1
+        self.print_level = 2
         # If do_transcription = False, do not transcribe audio (and send a dummy transcript)
         #self.do_transcription =  rospy.get_param(self.node_name + '/do_transcription', True)
         self.do_transcription = True
@@ -59,11 +59,12 @@ class SpeechRecognizer(object):
         #    self.TOPIC_BASE + '/text', String, queue_size=10)
         #self.pub_event = rospy.Publisher(
         #    self.TOPIC_BASE + '/log', event, queue_size=10)
+        self.bedtime_recording_only = False
         self.sample_rate = 48000
         self.async = False
         dynamic_thresholding = False
         if not dynamic_thresholding:
-            threshold = 5000
+            threshold = 9000
         else:
             threshold = 50
         self.speech_detector = SpeechDetector(
@@ -153,11 +154,12 @@ class SpeechRecognizer(object):
             thread.start()
         #while not rospy.is_shutdown():
         # put the timing constraints here??? 
-        is_past_bedtime = (datetime.now().hour > 22)
-        is_before_wake_time = (datetime.now().hour < 5)
         try:
             while (True):
-                if (is_past_bedtime or is_before_wake_time):
+                is_past_bedtime = (datetime.now().hour > 22)
+                is_before_wake_time = (datetime.now().hour < 5)
+                if (((is_past_bedtime or is_before_wake_time) and self.bedtime_recording_only) or
+                    not self.bedtime_recording_only):
                     aud_data, start_time, end_time = self.speech_detector.get_next_utter(
                         self.stream, *self.get_utterance_start_end_callbacks(sn))
                     if aud_data is None:
@@ -173,13 +175,16 @@ class SpeechRecognizer(object):
                         if not self.do_transcription:
                             transc, confidence = ("dummy_transcript with no confidence", 0.0)
                         else:
-                            transc, confidence = self.recog(sn)
-                            if (transc is not None):
-                                self.utterance_decoded(sn, transc, confidence, start_time, end_time)
-                            else:
-                                self.utterance_decoded(sn, "## speech not recognized ##", 0.0, start_time, end_time)
+                            recog_thread = Thread(target=self.recog, args=(sn, start_time, end_time, ))
+                            recog_thread.start()
+                            #~ transc, confidence = self.recog(sn, start_time, end_time)
+                            #~ if (transc is not None):
+                                #~ self.utterance_decoded(sn, transc, confidence, start_time, end_time)
+                            #~ else:
+                                #~ self.utterance_decoded(sn, "## speech not recognized ##", 0.0, start_time, end_time)
                     sn += 1
                 else:
+                    print(datetime.now().isoformat())
                     time.sleep(60)
         except KeyboardInterrupt:
             print("W: interrupt received, stopping")
@@ -193,20 +198,20 @@ class SpeechRecognizer(object):
             self.pa_handler.terminate()
         if hasattr(self, "csv_file"):
             self.csv_file.close()
-        if (hasattr(self, "history_dir")):
-            shutil.rmtree(self.history_dir)
+        #~ if (hasattr(self, "history_dir")):
+            #~ shutil.rmtree(self.history_dir)
 
     def utterance_start(self, utterance_id):
         if self.print_level > 1:
             #rospy.loginfo('Utterance started')
-            print("Utterance started")
+            print("Utterance " + str(utterance_id) + " started")
         #self.pub_event.publish(
             #self.get_event_base_message(event.STARTED, utterance_id))
 
     def utterance_end(self, utterance_id):
         if self.print_level > 1:
             #rospy.loginfo('Utterance completed')
-            print("Utterance completed")
+            print("Utterance " + str(utterance_id) + " completed")
         #self.pub_event.publish(
             #self.get_event_base_message(event.STOPPED, utterance_id))
 
@@ -282,7 +287,7 @@ class SpeechRecognizer(object):
         wf.close()
         #rospy.logdebug('File saved to {}'.format(path))
 
-    def recog(self, utterance_id):
+    def recog(self, utterance_id, utterance_start_time, utterance_end_time):
         """
         Constructs a recog operation with the audio file specified by sn
         The operation is an asynchronous api call
@@ -333,8 +338,14 @@ class SpeechRecognizer(object):
         else:
             response = self.speech_client.recognize(config=config, audio=audio)
             for result in response.results:
-                return (result.alternatives[0].transcript, result.alternatives[0].confidence)
-            return (None, None)
+                self.utterance_decoded(utterance_id, result.alternatives[0].transcript, 
+                    result.alternatives[0].confidence, utterance_start_time, utterance_end_time)
+                return
+                #~ return (result.alternatives[0].transcript, result.alternatives[0].confidence)
+            #~ return (None, None)
+            self.utterance_decoded(utterance_id, "## speech not recognized ##", 
+                0.0, utterance_start_time, utterance_end_time)
+            return
                 
 
  #   def check_operation(self):
